@@ -1,0 +1,147 @@
+name: cc-hris-lab
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api/Dockerfile
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      APP_KEY: ${APP_KEY}
+      APP_URL: http://localhost
+      APP_TIMEZONE: Asia/Colombo
+      LOG_CHANNEL: stderr
+      LOG_LEVEL: info
+
+      DB_CONNECTION: mysql
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_DATABASE: ${MYSQL_DATABASE}
+      DB_USERNAME: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+
+      CACHE_STORE: redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_CLIENT: predis
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - hris-network
+
+  api-nginx:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api-nginx/Dockerfile
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/api/health/live | grep -q '\"status\":\"ok\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - hris-network
+
+  db:
+    image: mariadb:11.4
+    environment:
+      MARIADB_DATABASE: ${MYSQL_DATABASE}
+      MARIADB_USER: ${MYSQL_USER}
+      MARIADB_PASSWORD: ${MYSQL_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - hris-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin --skip-ssl ping -h localhost -u root -p${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - hris-network
+    command: ["--skip-ssl"]
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - hris-redis-data:/data
+    networks:
+      - hris-network
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web/Dockerfile
+    ports:
+      - "8081:80"
+      - "8443:443"
+    depends_on:
+      api-nginx:
+        condition: service_healthy
+    networks:
+      - hris-network
+    volumes:
+      - ./infrastructure/certs:/etc/nginx/certs:ro
+
+  keycloak-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${KEYCLOAK_DB}
+      POSTGRES_USER: ${KEYCLOAK_DB_USER}
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+    volumes:
+      - keycloak-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${KEYCLOAK_DB_USER} -d ${KEYCLOAK_DB}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - hris-network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.0
+    command: start-dev
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: keycloak-db
+      KC_DB_URL_DATABASE: ${KEYCLOAK_DB}
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USER}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+
+      KC_HEALTH_ENABLED: "true"
+
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME: https://${LAB_HOST}:8180
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/certs/hris-lab.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/certs/hris-lab.key
+      KC_HTTP_MANAGEMENT_SCHEME: http
+
+    ports:
+      - "8180:8443"
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    networks:
+      - hris-network
+    volumes:
+      - ./infrastructure/certs:/opt/keycloak/conf/certs:ro
+
+networks:
+  hris-network:
+    driver: bridge
+
+volumes:
+  hris-db-data:
+  hris-redis-data:
+  keycloak-db-data:

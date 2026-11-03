@@ -1,0 +1,14 @@
+FROM node:22-alpine AS build
+
+WORKDIR /app
+
+COPY hris-web/package*.json ./
+RUN npm ci
+
+COPY hris-web/ ./
+RUN npm run build
+
+FROM nginx:1.27-alpine
+
+COPY infrastructure/nginx/web.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html

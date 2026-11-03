@@ -1,0 +1,4 @@
+.env.docker
+infrastructure/certs/*
+!infrastructure/certs/.gitkeep
+.idea
